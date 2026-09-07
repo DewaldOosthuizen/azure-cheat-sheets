@@ -1,3 +1,38 @@
+# Release
+#
+# Manual release pipeline triggered via `workflow_dispatch`.
+# Produces a tagged CalVer release and optionally deploys to Vercel production.
+#
+# Trigger:
+# - workflow_dispatch with optional inputs:
+#   - version: CalVer override (YYYY.MM.DD[.micro]). Omit to auto-compute from today's date.
+#   - skip_deploy: true to generate the release/tag without pushing to Vercel.
+#   - skip_changelog: true to reuse the previous tag's baseline for changelog.
+#
+# Why manual:
+# - Prevents accidental releases on merge. A human explicitly clicks "Run workflow"
+#   after deciding the codebase is release-ready.
+#
+# CalVer scheme:
+# - Format: YYYY.MD.D[.micro]
+# - Computed by `scripts/bump_version.py` from `pyproject.toml`.
+# - Git tag mirrors the version: v<version>.
+# - Micro increments (.1, .2, ...) allow multiple same-day hotfixes without
+#   changing the date portion.
+#
+# Job dependency chain:
+# 1. prepare-release
+# 2. build-release (needs: prepare-release)
+# 3. create-github-release (needs: prepare-release + build-release)
+# 4. deploy-vercel (needs: prepare-release + build-release + create-github-release)
+#
+# Each stage halts the chain on failure, so a broken build never results
+# in a published release or partial deploy.
+#
+# Permissions:
+# - contents: write — needed to commit the version bump and push tags.
+# - id-token: write — needed for Vercel's OIDC-based deploy authentication.
+
 name: Release
 
 on:
@@ -31,6 +66,8 @@ env:
 
 jobs:
   # 1. Prepare release: compute version, update pyproject.toml, commit, tag, push
+  # This job is the source of truth for the release version. All downstream
+  # jobs read its outputs so they operate on the exact same artifact.
   prepare-release:
     name: Prepare Release
     runs-on: ubuntu-latest
@@ -42,6 +79,8 @@ jobs:
       - name: Checkout (full history for tag detection)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
+          # Full history is required because bump_version.py inspects git tags
+          # to determine whether today's version already exists.
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -52,6 +91,9 @@ jobs:
 
       - name: Bump version
         id: bump
+        # Computes the next CalVer version and writes it to pyproject.toml.
+        # If the workflow_dispatch `version` input is provided, it is used
+        # verbatim; otherwise the script auto-computes YYYY.MM.DD[.micro].
         run: |
           set -euo pipefail
           VERSION_ARG="${{ github.event.inputs.version }}"
@@ -64,17 +106,21 @@ jobs:
           TAG="v$NEW_VERSION"
           echo "tag=$TAG" >> $GITHUB_OUTPUT
 
-          # Get the commit SHA after version bump commit
+          # Capture the commit SHA after the version bump commit so downstream
+          # jobs can checkout the exact released commit.
           COMMIT_SHA=$(git rev-parse HEAD)
           echo "commit_sha=$COMMIT_SHA" >> $GITHUB_OUTPUT
 
       - name: Configure git
+        # Required because this job commits and pushes back to main.
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
       - name: Commit version bump
         if: steps.bump.outputs.version != ''
+        # Amend pyproject.toml, commit with a conventional chore message,
+        # and push back to main so the version bump is part of the release.
         run: |
           git add pyproject.toml
           git commit -m "chore: release ${{ steps.bump.outputs.version }}"
@@ -82,11 +128,15 @@ jobs:
 
       - name: Create and push tag
         if: steps.bump.outputs.version != ''
+        # Annotated tag tied to the version-bump commit. This tag is the
+        # release artifact reference for all subsequent jobs.
         run: |
           git tag -a "${{ steps.bump.outputs.tag }}" -m "Release ${{ steps.bump.outputs.version }}"
           git push origin "${{ steps.bump.outputs.tag }}"
 
   # 2. Build release artifacts at the new tag
+  # Validates the tagged commit with the full CI suite and uploads the
+  # built MkDocs site as an artifact for deploy-vercel to consume.
   build-release:
     name: Build Release Artifacts
     runs-on: ubuntu-latest
@@ -95,6 +145,8 @@ jobs:
       - name: Checkout at release tag
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
+          # Checkout the exact tag produced by prepare-release so build
+          # artifacts and the GitHub release are guaranteed to match.
           ref: ${{ needs.prepare-release.outputs.tag }}
           fetch-depth: 0
 
@@ -116,6 +168,9 @@ jobs:
         run: npm ci
 
       - name: Run full CI pipeline (make ci)
+        # Re-runs the complete local CI target against the release tag.
+        # This guarantees the tagged commit passes markdownlint, mermaid,
+        # ruff, pytest, docs build, and npm audit.
         run: make ci
 
       - name: Build MkDocs site (strict)
@@ -129,6 +184,8 @@ jobs:
           retention-days: 7
 
   # 3. Generate changelog and create GitHub Release
+  # Depends on both prepare-release and build-release so we only publish
+  # a release after the tagged commit has passed full CI.
   create-github-release:
     name: Create GitHub Release
     runs-on: ubuntu-latest
@@ -148,6 +205,8 @@ jobs:
       - name: Generate changelog
         id: changelog
         if: ${{ !github.event.inputs.skip_changelog }}
+        # Generates CHANGELOG.md from conventional commits since the last tag.
+        # The file is consumed by softprops/action-gh-release as the release body.
         run: |
           python3 scripts/generate_changelog.py --output CHANGELOG.md
 
@@ -162,6 +221,8 @@ jobs:
           generate_release_notes: false
 
   # 4. Deploy to Vercel production
+  # Depends on prepare-release, build-release, and create-github-release so
+  # production only sees commits that are tagged and have passing CI.
   deploy-vercel:
     name: Deploy to Vercel
     runs-on: ubuntu-latest
@@ -179,18 +240,26 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Install Vercel CLI (pinned)
+        # Pin the CLI version to avoid unexpected breaking changes from latest.
         run: npm install --global vercel@59.10.0
 
       - name: Pull Vercel Environment Information
+        # Fetches project env vars and config from Vercel without deploying.
+        # Required before `vercel build` so local build matches Vercel's.
         run: vercel pull --yes --environment=production --token=${{ secrets.VERCEL_TOKEN }}
 
       - name: Build Project Artifacts
+        # Produces `.vercel/output` in the repo; deploy step uploads this.
         run: vercel build --prod --token=${{ secrets.VERCEL_TOKEN }}
 
       - name: Deploy Project Artifacts to Vercel
+        # --prebuilt tells Vercel to trust the local build output instead of
+        # rebuilding remotely, keeping deploy deterministic.
         run: vercel deploy --prebuilt --prod --token=${{ secrets.VERCEL_TOKEN }}
 
       - name: Post deployment comment
+        # Visible in the workflow run summary; useful for tracing which
+        # version ended up in production without opening Vercel.
         run: |
           echo "🚀 Deployed version ${{ needs.prepare-release.outputs.version }} to production"
           echo "🔗 https://tech-cheat-sheets-and-notes.vercel.app"
