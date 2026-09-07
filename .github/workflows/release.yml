@@ -381,6 +381,9 @@ jobs:
           # git commit -m "chore: release $TAG"
           # git push origin main
 
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
           git tag -a "$TAG" -m "Release $TAG (CalVer rolling release)"
           git push origin "$TAG"
           echo "Tagged and pushed $TAG"
