@@ -1,14 +1,31 @@
 # ──────────────────────────────────────────────────────────────────────────────
 # Release Pipeline — Tech Cheat Sheets
 #
-# Single chained workflow: markdownlint → python-lint → mermaid-check →
-# python-test → build → version/tag/release → Vercel deploy.
-# Every job depends on the previous one succeeding.
+# Two-phase workflow:
+#
+#   1. Validation phase (parallel, all must pass)
+#      - markdownlint
+#      - python-lint
+#      - mermaid-check
+#      - python-test
+#
+#   2. Release phase (strictly sequential)
+#      - build → version-tag-release → deploy
 #
 # Triggers
 # --------
 #   push to main       — full pipeline, auto-version if HEAD differs from last tag
 #   workflow_dispatch  — full pipeline, manual trigger (e.g. from Actions tab)
+#
+# Why validation is duplicated from pr-gate.yml
+# ---------------------------------------------
+#   PR Gate validates the PR head before merge. This workflow validates the
+#   exact commit that will be released/deployed. The two are not interchangeable:
+#   - A PR can pass PR Gate, then get squashed/rebased on merge, changing the
+#     commit SHA and potentially the file contents.
+#   - Direct pushes to main bypass PR Gate entirely.
+#   - The release tag and GitHub Release target the main-branch commit SHA,
+#     not the PR head SHA.
 #
 # Version/tag/release skip rule
 # ------------------------------
@@ -59,6 +76,10 @@ env:
   VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
 
 jobs:
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Phase 1: Validation (parallel — no inter-job dependencies)
+  # ═══════════════════════════════════════════════════════════════════════════
+
   # ── 1. Markdown Lint ────────────────────────────────────────────────────────
   markdownlint:
     name: Markdown Lint
@@ -89,7 +110,6 @@ jobs:
   python-lint:
     name: Python Lint
     runs-on: ubuntu-latest
-    needs: markdownlint
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -115,7 +135,6 @@ jobs:
   mermaid-check:
     name: Mermaid Check
     runs-on: ubuntu-latest
-    needs: python-lint
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -143,7 +162,6 @@ jobs:
   python-test:
     name: Python Tests (3.11)
     runs-on: ubuntu-latest
-    needs: mermaid-check
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -162,11 +180,43 @@ jobs:
       - name: Run tests with coverage
         run: pytest tests/ -v --cov=scripts --cov-report=term-missing --cov-fail-under=90
 
-  # ── 5. Build ───────────────────────────────────────────────────────────────
+  # ── 5. Validation Gate ─────────────────────────────────────────────────────
+  # Aggregates validation results. Fails if any validation job failed.
+  validation-gate:
+    name: Validation Gate
+    runs-on: ubuntu-latest
+    needs: [markdownlint, python-lint, mermaid-check, python-test]
+    if: always()
+    steps:
+      - name: Check all validation jobs succeeded
+        run: |
+          if [[ "${{ needs.markdownlint.result }}" != "success" ]]; then
+            echo "❌ markdownlint failed"
+            exit 1
+          fi
+          if [[ "${{ needs.python-lint.result }}" != "success" ]]; then
+            echo "❌ python-lint failed"
+            exit 1
+          fi
+          if [[ "${{ needs.mermaid-check.result }}" != "success" ]]; then
+            echo "❌ mermaid-check failed"
+            exit 1
+          fi
+          if [[ "${{ needs.python-test.result }}" != "success" ]]; then
+            echo "❌ python-test failed"
+            exit 1
+          fi
+          echo "✅ All validation checks passed"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Phase 2: Release (strictly sequential)
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  # ── 6. Build ───────────────────────────────────────────────────────────────
   build:
     name: Build
     runs-on: ubuntu-latest
-    needs: python-test
+    needs: validation-gate
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -189,7 +239,7 @@ jobs:
           path: site/
           retention-days: 7
 
-  # ── 6. Version · Tag · Release ─────────────────────────────────────────────
+  # ── 7. Version · Tag · Release ─────────────────────────────────────────────
   version-tag-release:
     name: Version · Tag · Release
     runs-on: ubuntu-latest
@@ -204,7 +254,7 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      # ── 6a. Skip check: is HEAD already released? ──────────────────────────
+      # ── 7a. Skip check: is HEAD already released? ──────────────────────────
       - name: Check if HEAD already matches last release tag
         id: skip-check
         run: |
@@ -237,7 +287,7 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
-      # ── 6b. Compute CalVer tag ─────────────────────────────────────────────
+      # ── 7b. Compute CalVer tag ─────────────────────────────────────────────
       - name: Compute CalVer tag
         id: version
         if: steps.skip-check.outputs.skip != 'true'
@@ -306,7 +356,7 @@ jobs:
             echo "::warning::HEAD has commits not yet merged to origin/main — tagging anyway"
           fi
 
-      # ── 6c. Bump version, tag, push ────────────────────────────────────────
+      # ── 7c. Bump version, tag, push ────────────────────────────────────────
       - name: Bump versions, create tag, push
         id: tag
         if: steps.skip-check.outputs.skip != 'true'
@@ -333,7 +383,7 @@ jobs:
 
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
 
-      # ── 6d. Create GitHub Release ──────────────────────────────────────────
+      # ── 7d. Create GitHub Release ──────────────────────────────────────────
       - name: Create GitHub Release
         if: steps.skip-check.outputs.skip != 'true'
         run: |
@@ -347,7 +397,7 @@ jobs:
 
           echo "Created GitHub Release $TAG"
 
-      # ── 6e. Summaries ──────────────────────────────────────────────────────
+      # ── 7e. Summaries ──────────────────────────────────────────────────────
       - name: Summary (skipped)
         if: steps.skip-check.outputs.skip == 'true'
         run: |
@@ -375,7 +425,7 @@ jobs:
           - **GitHub Release:** \`${TAG}\`
           EOF
 
-  # ── 7. Deploy to Vercel ────────────────────────────────────────────────────
+  # ── 8. Deploy to Vercel ────────────────────────────────────────────────────
   deploy:
     name: Deploy to Vercel
     runs-on: ubuntu-latest
