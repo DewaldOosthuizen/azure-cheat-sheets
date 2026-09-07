@@ -361,8 +361,8 @@ jobs:
             echo "::warning::HEAD has commits not yet merged to origin/main — tagging anyway"
           fi
 
-      # ── 7c. Bump version, tag, push ────────────────────────────────────────
-      - name: Bump versions, create tag, push
+      # ── 7c. Tag current commit ───────────────────────────────────────────────
+      - name: Create tag and push
         id: tag
         if: steps.skip-check.outputs.skip != 'true'
         run: |
@@ -370,22 +370,20 @@ jobs:
 
           TAG="${{ steps.version.outputs.tag }}"
 
-          python3 scripts/bump_version.py "$TAG"
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          git add pyproject.toml
-          git commit -m "chore: release $TAG"
-          echo "Committed version bump to $TAG"
-
-          git push origin main
-          echo "Pushed version bump commit to main"
+          # Version bump commit to main is intentionally disabled.
+          # Reason: branch protection on main requires PRs and does not
+          # allow github-actions[bot] to bypass. Tagging the current
+          # commit preserves the release flow without pushing to main.
+          # python3 scripts/bump_version.py "$TAG"
+          # git config user.name "github-actions[bot]"
+          # git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # git add pyproject.toml
+          # git commit -m "chore: release $TAG"
+          # git push origin main
 
           git tag -a "$TAG" -m "Release $TAG (CalVer rolling release)"
           git push origin "$TAG"
           echo "Tagged and pushed $TAG"
-
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
 
       # ── 7d. Create GitHub Release ──────────────────────────────────────────
