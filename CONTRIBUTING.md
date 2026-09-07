@@ -48,7 +48,7 @@ disrespectful, dismissive, or harmful will not be accepted.
 
 **Before you write a single line of content or code:**
 
-1. Browse the [GitHub Issues](https://github.com/DewaldOosthuizen/tech-cheat-sheets-and-notes /issues) tab and find an issue you want to work on.
+1. Browse the [GitHub Issues](https://github.com/DewaldOosthuizen/tech-cheat-sheets-and-notes/issues) tab and find an issue you want to work on.
 2. **Assign the issue to yourself** before starting any work.
    Go to the issue page → Assignees (right sidebar) → assign yourself.
    This signals to all other contributors that the issue is claimed.

@@ -31,6 +31,7 @@ jobs:
             README.md
             AGENTS.md
             CONTRIBUTING.md
+          config_file: .markdownlint-cli2.yaml
 
   # Quick Python lint — ruff check + format check (no audit, no test matrix)
   python-lint:
