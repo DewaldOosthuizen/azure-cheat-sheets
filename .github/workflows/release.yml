@@ -16,12 +16,12 @@
 #   the bump/tag/release step is skipped and Vercel deploy proceeds with the
 #   current state. If no CalVer tag exists yet, or HEAD has moved past the
 #   last tag, the step runs: bump_version.py computes CalVer, updates
-#   pyproject.toml, commits, pushes tag, and optionally creates a GitHub Release.
+#   pyproject.toml, commits, pushes tag, and creates a GitHub Release.
 #
 # Vercel deploy
 # -------------
-#   Runs after the version step (whether it executed or was skipped). Deploys
-#   the tag reference when a tag was created; otherwise deploys HEAD.
+#   Runs after the version step (whether it executed or was skipped). Always
+#   deploys the tag reference when a tag was created; otherwise deploys HEAD.
 #   No environment gate — deploys straight to production.
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -197,8 +197,6 @@ jobs:
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
       skip: ${{ steps.skip-check.outputs.skip }}
-      backend_version: ${{ steps.tag.outputs.backend_version }}
-      frontend_version: ${{ steps.tag.outputs.frontend_version }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -334,8 +332,6 @@ jobs:
           echo "Tagged and pushed $TAG"
 
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
-          echo "backend_version=${TAG}" >> "$GITHUB_OUTPUT"
-          echo "frontend_version=${TAG}" >> "$GITHUB_OUTPUT"
 
       # ── 6d. Create GitHub Release ──────────────────────────────────────────
       - name: Create GitHub Release
@@ -384,6 +380,7 @@ jobs:
     name: Deploy to Vercel
     runs-on: ubuntu-latest
     needs: version-tag-release
+    if: ${{ !github.event.inputs.skip_deploy }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
