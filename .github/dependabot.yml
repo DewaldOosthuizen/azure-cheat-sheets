@@ -6,6 +6,9 @@ updates:
       interval: weekly
     assignees:
       - DewaldOosthuizen
+    labels:
+      - dependencies
+      - github-actions
   - package-ecosystem: npm
     directory: /
     schedule:
@@ -16,6 +19,9 @@ updates:
           - "*"
     assignees:
       - DewaldOosthuizen
+    labels:
+      - dependencies
+      - npm
   - package-ecosystem: pip
     directory: /
     schedule:
@@ -27,3 +33,6 @@ updates:
           - "*"
     assignees:
       - DewaldOosthuizen
+    labels:
+      - dependencies
+      - pip

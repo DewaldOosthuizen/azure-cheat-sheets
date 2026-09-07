@@ -1,15 +1,35 @@
+# Lint
+#
+# Full validation pipeline that runs on every push to `main`.
+#
+# Relationship to PR Gate:
+# - PR Gate (pr-gate.yml) gives fast, sequential feedback on pull requests.
+# - Lint runs the same checks plus extras on push-to-main, ensuring the
+#   protected branch never receives a commit that would break CI.
+#
+# Why pull_request was removed:
+# - Duplicating full CI on every PR commit wastes runner minutes.
+# - PR Gate covers the same checks with faster sequential gating.
+# - If a contributor wants full verification locally, they can run `make ci`.
+#
+# This workflow is also referenced by release.yml's build-release job,
+# which intentionally re-uses the same checks against the release tag.
+
 name: Lint
 
 on:
   push:
     branches:
       - main
-  pull_request:
+  # Removed pull_request trigger — now handled by pr-gate.yml
 
 env:
   PYTHON_VERSION: "3.11"
+  NODE_VERSION: "20"
 
 jobs:
+  # Markdown lint with project-specific relaxed rules.
+  # Uses `.markdownlint-cli2.yaml` to stay consistent with local `make markdownlint`.
   markdownlint:
     runs-on: ubuntu-latest
     steps:
@@ -20,7 +40,11 @@ jobs:
             docs/**/*.md
             README.md
             AGENTS.md
+            CONTRIBUTING.md
+          config_file: .markdownlint-cli2.yaml
 
+  # Python linting: ruff check + format check.
+  # Runs on every push-to-main; the PR gate runs a subset for speed.
   python-lint:
     runs-on: ubuntu-latest
     steps:
@@ -37,8 +61,13 @@ jobs:
       - name: Format check
         run: ruff format --check scripts/ tests/
       - name: Audit Python dependencies
+        # pip-audit checks for known CVEs in installed packages.
+        # --skip-editable avoids flagging the local editable package itself.
         run: pip-audit --skip-editable
 
+  # Test matrix across supported Python versions.
+  # This is the authoritative compatibility check; the PR gate runs only 3.11.
+  # fail-fast: false ensures all versions report, even if one fails.
   python-test:
     runs-on: ubuntu-latest
     strategy:
@@ -53,8 +82,13 @@ jobs:
       - name: Install dev deps
         run: pip install -e '.[dev]'
       - name: Run tests
+        # Coverage threshold is 90%; enforced on scripts/ only because docs/
+        # content isn't Python code.
         run: pytest tests/ -v --cov=scripts --cov-report=term-missing --cov-fail-under=90
 
+  # Link integrity check.
+  # Verifies that internal and external links in Markdown files resolve.
+  # Uses lychee with retries and timeouts to avoid transient network failures.
   link-check:
     runs-on: ubuntu-latest
     steps:
@@ -67,6 +101,9 @@ jobs:
             docs/**/*.md README.md CONTRIBUTING.md AGENTS.md
           fail: true
 
+  # Strict MkDocs build.
+  # Verifies snippet references, plugin config, and that the site builds
+  # without warnings in strict mode. Catches broken PyMdown Snippets refs.
   docs-build:
     runs-on: ubuntu-latest
     steps:
@@ -79,49 +116,60 @@ jobs:
       - name: Build MkDocs site (strict)
         run: mkdocs build --strict
 
+  # npm dependency audit.
+  # Surfaces high+ severity advisories in dev dependencies.
+  # Low/medium advisories are batched into dependabot weekly updates to
+  # avoid reviewer fatigue.
   npm-audit:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
-          node-version: "20"
+          node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
       - name: Install dependencies
         run: npm ci
       - name: Audit npm dependencies
         run: npm audit --audit-level=high
 
+  # Mermaid diagram validation.
+  # Runs last because it depends on Python + Node being set up correctly,
+  # and it's the slowest step (headless Chromium rendering via mmdc).
+  # Needs all other jobs because a site built from broken diagrams would
+  # pass docs-build but display broken images to users.
   mermaid-check:
-      runs-on: ubuntu-latest
-      needs:
-        - markdownlint
-        - docs-build
-        - python-lint
-        - python-test
-        - link-check
-        - npm-audit
-      env:
-        PUPPETEER_CONFIG_FILE: /tmp/puppeteer-config.json
-      steps:
-        - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
-          with:
-            python-version: ${{ env.PYTHON_VERSION }}
-        - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
-          with:
-            node-version: "20"
-            cache: 'npm'
-        - name: Install mermaid-cli
-          run: npm ci
-        - name: Expose local bin on PATH
-          run: echo "$GITHUB_WORKSPACE/node_modules/.bin" >> $GITHUB_PATH
-        - name: Write puppeteer config
-          run: echo '{"args":["--no-sandbox","--disable-setuid-sandbox"]}' > /tmp/puppeteer-config.json
-        - name: Validate Mermaid diagrams
-          run: |
-            python3 scripts/validate_mermaid.py \
-              $(find docs -name '*.md' \
-                ! -path 'docs/azure/diagrams/*' \
-                ! -path 'docs/overrides/*' | sort) \
-              $(find docs -name '*.mmd' | sort)
+    runs-on: ubuntu-latest
+    needs:
+      - markdownlint
+      - docs-build
+      - python-lint
+      - python-test
+      - link-check
+      - npm-audit
+    env:
+      PUPPETEER_CONFIG_FILE: /tmp/puppeteer-config.json
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+      - name: Install mermaid-cli
+        run: npm ci
+      - name: Expose local bin on PATH
+        # npm ci installs mmdc into node_modules/.bin; add it so validate_mermaid.py can invoke it.
+        run: echo "$GITHUB_WORKSPACE/node_modules/.bin" >> $GITHUB_PATH
+      - name: Write puppeteer config
+        # Headless Chromium needs --no-sandbox on GitHub's container runners.
+        run: echo '{"args":["--no-sandbox","--disable-setuid-sandbox"]}' > /tmp/puppeteer-config.json
+      - name: Validate Mermaid diagrams
+        run: |
+          python3 scripts/validate_mermaid.py \
+            $(find docs -name '*.md' \
+              ! -path 'docs/azure/diagrams/*' \
+              ! -path 'docs/overrides/*' | sort) \
+            $(find docs -name '*.mmd' | sort)
