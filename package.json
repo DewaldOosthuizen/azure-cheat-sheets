@@ -4,8 +4,8 @@
   "description": "Azure architecture cheat sheets for AZ-305",
   "private": true,
   "devDependencies": {
-    "@mermaid-js/mermaid-cli": "11.16.0",
-    "puppeteer": "25.9.0"
+    "@mermaid-js/mermaid-cli": "11.17.0",
+    "puppeteer": "25.10.0"
   },
   "dependencies": {
     "@vercel/analytics": "^2.0.1",
