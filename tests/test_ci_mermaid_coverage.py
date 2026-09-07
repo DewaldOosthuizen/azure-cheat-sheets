@@ -13,7 +13,7 @@ import re
 from conftest import REPO_ROOT
 
 MAKEFILE = REPO_ROOT / "Makefile"
-LINT_YML = REPO_ROOT / ".github" / "workflows" / "lint.yml"
+RELEASE_YML = REPO_ROOT / ".github" / "workflows" / "release.yml"
 
 
 class TestMakefileMermaidCoverage:
@@ -41,13 +41,13 @@ class TestCiMermaidCoverage:
     """CI 'Validate Mermaid diagrams' step must use broad 'find docs' discovery."""
 
     def _step_block(self) -> str:
-        content = LINT_YML.read_text()
+        content = RELEASE_YML.read_text()
         m = re.search(
             r"Validate Mermaid diagrams.*?(?=\n\s*- name:|\Z)",
             content,
             re.S,
         )
-        assert m, "Could not locate 'Validate Mermaid diagrams' step in lint.yml"
+        assert m, "Could not locate 'Validate Mermaid diagrams' step in release.yml"
         return m.group(0)
 
     def test_md_find_covers_all_docs(self) -> None:

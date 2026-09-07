@@ -33,7 +33,7 @@ def _uv_available() -> bool:
 
 def _uv_export(path: Path) -> None:
     """Run `uv export --format requirements.txt --output-file <path> --extra docs
-    --no-dev --no-header --python 3.12`."""
+    --no-dev --no-header` using the active interpreter."""
     subprocess.run(
         [
             "uv",
@@ -46,8 +46,6 @@ def _uv_export(path: Path) -> None:
             "docs",
             "--no-dev",
             "--no-header",
-            "--python",
-            "3.12",
         ],
         cwd=REPO_ROOT,
         check=True,

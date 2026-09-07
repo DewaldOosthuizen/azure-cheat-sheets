@@ -3,8 +3,8 @@ Tests for issue #195: Pin Python dev dependency versions in pyproject.toml.
 
 Verifies that:
   - pyproject.toml carries upper-bound caps on all three dev dependencies
-  - .github/workflows/lint.yml python-lint job installs via editable install
-  - .github/workflows/lint.yml python-test job installs via editable install
+  - .github/workflows/release.yml python-lint job installs via editable install
+  - .github/workflows/release.yml python-test job installs via editable install
   - CONTRIBUTING.md Section 5 directs contributors to pip install -e '.[dev]'
 """
 
@@ -16,11 +16,10 @@ from packaging.requirements import Requirement
 from packaging.version import Version
 
 PYPROJECT = REPO_ROOT / "pyproject.toml"
-LINT_YML = REPO_ROOT / ".github" / "workflows" / "lint.yml"
+RELEASE_YML = REPO_ROOT / ".github" / "workflows" / "release.yml"
 CONTRIBUTING = REPO_ROOT / "CONTRIBUTING.md"
 PACKAGE_JSON = REPO_ROOT / "package.json"
 VERCEL_JSON = REPO_ROOT / "vercel.json"
-PROD_DEPLOY_YML = REPO_ROOT / ".github" / "workflows" / "prod-deploy.yml"
 
 
 def _package_json_dev_deps():
@@ -93,32 +92,32 @@ class TestPyprojectUpperBounds:
 
 
 class TestCIPythonLintJob:
-    """.github/workflows/lint.yml python-lint job must use editable install."""
+    """.github/workflows/release.yml python-lint job must use editable install."""
 
     def test_python_lint_uses_editable_install(self):
-        content = LINT_YML.read_text()
+        content = RELEASE_YML.read_text()
         assert "pip install -e '.[dev]'" in content, (
             "python-lint job must install via pip install -e '.[dev]'"
         )
 
     def test_python_lint_no_inline_ruff_install(self):
-        content = LINT_YML.read_text()
+        content = RELEASE_YML.read_text()
         assert 'pip install "ruff>=' not in content, (
             "python-lint job must not contain an inline ruff version pin"
         )
 
 
 class TestCIPythonTestJob:
-    """.github/workflows/lint.yml python-test job must use editable install."""
+    """.github/workflows/release.yml python-test job must use editable install."""
 
     def test_python_test_uses_editable_install(self):
-        content = LINT_YML.read_text()
+        content = RELEASE_YML.read_text()
         assert "pip install -e '.[dev]'" in content, (
             "python-test job must install via pip install -e '.[dev]'"
         )
 
     def test_python_test_no_bare_pip_install(self):
-        content = LINT_YML.read_text()
+        content = RELEASE_YML.read_text()
         assert "pip install pytest pytest-cov" not in content, (
             "python-test job must not use bare unconstrained pip install"
         )
@@ -168,13 +167,13 @@ class TestVercelCliPinned:
     """Vercel CLI must be pinned exactly and not installed via @latest in prod deploy."""
 
     def test_prod_deploy_no_vercel_latest(self):
-        content = PROD_DEPLOY_YML.read_text()
-        assert "vercel@latest" not in content, "prod-deploy.yml must not install vercel@latest"
+        content = RELEASE_YML.read_text()
+        assert "vercel@latest" not in content, "release.yml must not install vercel@latest"
 
     def test_prod_deploy_pins_exact_vercel_version(self):
-        content = PROD_DEPLOY_YML.read_text()
+        content = RELEASE_YML.read_text()
         assert re.search(r"npm install --global vercel@\d+\.\d+\.\d+", content), (
-            "prod-deploy.yml must install a pinned exact Vercel CLI version"
+            "release.yml must install a pinned exact Vercel CLI version"
         )
 
 

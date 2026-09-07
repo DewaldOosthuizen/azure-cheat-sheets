@@ -131,6 +131,11 @@ jobs:
       - name: Ruff format check
         run: ruff format --check scripts/ tests/
 
+      - name: Audit Python dependencies
+        # pip-audit checks for known CVEs in installed packages.
+        # --skip-editable avoids flagging the local editable package itself.
+        run: pip-audit --skip-editable
+
   # ── 3. Mermaid Check ───────────────────────────────────────────────────────
   mermaid-check:
     name: Mermaid Check
@@ -151,7 +156,7 @@ jobs:
       - name: Expose local bin on PATH
         run: echo "$GITHUB_WORKSPACE/node_modules/.bin" >> $GITHUB_PATH
 
-      - name: Run mermaid validation
+      - name: Validate Mermaid diagrams
         run: |
           echo '{"args":["--no-sandbox","--disable-setuid-sandbox"]}' > /tmp/puppeteer-config.json
           find docs -name '*.md' ! -path 'docs/azure/diagrams/*' ! -path 'docs/overrides/*' > /tmp/md-files.txt

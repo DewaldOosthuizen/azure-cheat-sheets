@@ -2,7 +2,7 @@
 
 Covers:
   - pyproject.toml declares pip-audit>=2.7,<3 in [project.optional-dependencies] dev
-  - .github/workflows/lint.yml python-lint job has an "Audit Python dependencies" step
+  - .github/workflows/release.yml python-lint job has an "Audit Python dependencies" step
     that runs `pip-audit` with no continue-on-error flag
   - CONTRIBUTING.md section 6 documents pip-audit after the "Run tests" block
 """
@@ -14,7 +14,7 @@ from packaging.requirements import Requirement
 from packaging.version import Version
 
 PYPROJECT = REPO_ROOT / "pyproject.toml"
-LINT_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "lint.yml"
+RELEASE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "release.yml"
 CONTRIBUTING = REPO_ROOT / "CONTRIBUTING.md"
 
 
@@ -62,7 +62,7 @@ class TestPyprojectPipAudit:
 
 
 # ---------------------------------------------------------------------------
-# .github/workflows/lint.yml
+# .github/workflows/release.yml
 # ---------------------------------------------------------------------------
 
 
@@ -70,7 +70,7 @@ class TestCIAuditStep:
     """python-lint job has an Audit Python dependencies step running pip-audit."""
 
     def _workflow_text(self) -> str:
-        return LINT_WORKFLOW.read_text()
+        return RELEASE_WORKFLOW.read_text()
 
     def test_audit_step_name_present(self):
         assert "Audit Python dependencies" in self._workflow_text(), (
@@ -98,11 +98,11 @@ class TestCIAuditStep:
 
     def test_audit_step_appears_after_format_check(self):
         text = self._workflow_text()
-        format_pos = text.find("Format check")
+        format_pos = text.find("Ruff format check")
         audit_pos = text.find("Audit Python dependencies")
-        assert format_pos != -1, "Format check step not found"
+        assert format_pos != -1, "Ruff format check step not found"
         assert audit_pos != -1, "Audit Python dependencies step not found"
-        assert audit_pos > format_pos, "Audit step must appear after Format check step"
+        assert audit_pos > format_pos, "Audit step must appear after Ruff format check step"
 
     def test_audit_step_inside_python_lint_job(self):
         text = self._workflow_text()

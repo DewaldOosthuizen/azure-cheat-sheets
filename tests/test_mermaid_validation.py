@@ -9,7 +9,7 @@ import validate_mermaid
 from conftest import REPO_ROOT
 
 MAKEFILE = REPO_ROOT / "Makefile"
-LINT_YML = REPO_ROOT / ".github" / "workflows" / "lint.yml"
+RELEASE_YML = REPO_ROOT / ".github" / "workflows" / "release.yml"
 
 
 class TestMmdcNotFound:
@@ -751,13 +751,13 @@ class TestDiscoveryIncludesGoogleCloud:
     """
 
     def _ci_step_block(self) -> str:
-        content = LINT_YML.read_text()
+        content = RELEASE_YML.read_text()
         m = re.search(
             r"Validate Mermaid diagrams.*?(?=\n\s*- name:|\Z)",
             content,
             re.S,
         )
-        assert m, "Could not locate 'Validate Mermaid diagrams' step in lint.yml"
+        assert m, "Could not locate 'Validate Mermaid diagrams' step in release.yml"
         return m.group(0)
 
     def test_makefile_mmd_find_output_includes_google_diagrams(self, tmp_path):
@@ -823,13 +823,13 @@ class TestDiscoveryIncludesProgramming:
     """
 
     def _ci_step_block(self) -> str:
-        content = LINT_YML.read_text()
+        content = RELEASE_YML.read_text()
         m = re.search(
             r"Validate Mermaid diagrams.*?(?=\n\s*- name:|\Z)",
             content,
             re.S,
         )
-        assert m, "Could not locate 'Validate Mermaid diagrams' step in lint.yml"
+        assert m, "Could not locate 'Validate Mermaid diagrams' step in release.yml"
         return m.group(0)
 
     def test_makefile_mmd_find_output_includes_programming_diagrams(self, tmp_path):
