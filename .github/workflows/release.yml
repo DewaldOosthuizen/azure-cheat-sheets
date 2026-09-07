@@ -1,45 +1,40 @@
-# Release
+# ──────────────────────────────────────────────────────────────────────────────
+# Release Pipeline — Tech Cheat Sheets
 #
-# Manual release pipeline triggered via `workflow_dispatch`.
-# Produces a tagged CalVer release and optionally deploys to Vercel production.
+# Single chained workflow: markdownlint → python-lint → mermaid-check →
+# python-test → build → version/tag/release → Vercel deploy.
+# Every job depends on the previous one succeeding.
 #
-# Trigger:
-# - workflow_dispatch with optional inputs:
-#   - version: CalVer override (YYYY.MM.DD[.micro]). Omit to auto-compute from today's date.
-#   - skip_deploy: true to generate the release/tag without pushing to Vercel.
-#   - skip_changelog: true to reuse the previous tag's baseline for changelog.
+# Triggers
+# --------
+#   push to main       — full pipeline, auto-version if HEAD differs from last tag
+#   workflow_dispatch  — full pipeline, manual trigger (e.g. from Actions tab)
 #
-# Why manual:
-# - Prevents accidental releases on merge. A human explicitly clicks "Run workflow"
-#   after deciding the codebase is release-ready.
+# Version/tag/release skip rule
+# ------------------------------
+#   If HEAD's SHA equals the commit SHA of the last CalVer tag on origin/main,
+#   the bump/tag/release step is skipped and Vercel deploy proceeds with the
+#   current state. If no CalVer tag exists yet, or HEAD has moved past the
+#   last tag, the step runs: bump_version.py computes CalVer, updates
+#   pyproject.toml, commits, pushes tag, and optionally creates a GitHub Release.
 #
-# CalVer scheme:
-# - Format: YYYY.MD.D[.micro]
-# - Computed by `scripts/bump_version.py` from `pyproject.toml`.
-# - Git tag mirrors the version: v<version>.
-# - Micro increments (.1, .2, ...) allow multiple same-day hotfixes without
-#   changing the date portion.
-#
-# Job dependency chain:
-# 1. prepare-release
-# 2. build-release (needs: prepare-release)
-# 3. create-github-release (needs: prepare-release + build-release)
-# 4. deploy-vercel (needs: prepare-release + build-release + create-github-release)
-#
-# Each stage halts the chain on failure, so a broken build never results
-# in a published release or partial deploy.
-#
-# Permissions:
-# - contents: write — needed to commit the version bump and push tags.
-# - id-token: write — needed for Vercel's OIDC-based deploy authentication.
+# Vercel deploy
+# -------------
+#   Runs after the version step (whether it executed or was skipped). Deploys
+#   the tag reference when a tag was created; otherwise deploys HEAD.
+#   No environment gate — deploys straight to production.
+# ──────────────────────────────────────────────────────────────────────────────
 
-name: Release
+name: Release Pipeline
 
-on:
+"on":
+  push:
+    branches:
+      - main
   workflow_dispatch:
     inputs:
       version:
-        description: "Override version (CalVer YYYY.MM.DD[.micro]). If omitted, computes next version from current date."
+        description: "Override version (CalVer YYYY.MM.DD[.micro]). Omit to auto-compute."
         required: false
         type: string
       skip_deploy:
@@ -53,7 +48,6 @@ on:
         type: boolean
         default: false
 
-# Required permissions for: tagging, creating releases, committing version bump
 permissions:
   contents: write
   id-token: write
@@ -65,113 +59,125 @@ env:
   VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
 
 jobs:
-  # 1. Prepare release: compute version, update pyproject.toml, commit, tag, push
-  # This job is the source of truth for the release version. All downstream
-  # jobs read its outputs so they operate on the exact same artifact.
-  prepare-release:
-    name: Prepare Release
+  # ── 1. Markdown Lint ────────────────────────────────────────────────────────
+  markdownlint:
+    name: Markdown Lint
     runs-on: ubuntu-latest
-    outputs:
-      version: ${{ steps.bump.outputs.version }}
-      tag: ${{ steps.bump.outputs.tag }}
-      commit_sha: ${{ steps.bump.outputs.commit_sha }}
     steps:
-      - name: Checkout (full history for tag detection)
+      - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          # Full history is required because bump_version.py inspects git tags
-          # to determine whether today's version already exists.
-          fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Setup Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-
-      - name: Bump version
-        id: bump
-        # Computes the next CalVer version and writes it to pyproject.toml.
-        # If the workflow_dispatch `version` input is provided, it is used
-        # verbatim; otherwise the script auto-computes YYYY.MM.DD[.micro].
-        run: |
-          set -euo pipefail
-          VERSION_ARG="${{ github.event.inputs.version }}"
-          if [ -n "$VERSION_ARG" ]; then
-            NEW_VERSION=$(python3 scripts/bump_version.py "$VERSION_ARG")
-          else
-            NEW_VERSION=$(python3 scripts/bump_version.py)
-          fi
-          echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
-          TAG="v$NEW_VERSION"
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
-
-          # Capture the commit SHA after the version bump commit so downstream
-          # jobs can checkout the exact released commit.
-          COMMIT_SHA=$(git rev-parse HEAD)
-          echo "commit_sha=$COMMIT_SHA" >> $GITHUB_OUTPUT
-
-      - name: Configure git
-        # Required because this job commits and pushes back to main.
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-      - name: Commit version bump
-        if: steps.bump.outputs.version != ''
-        # Amend pyproject.toml, commit with a conventional chore message,
-        # and push back to main so the version bump is part of the release.
-        run: |
-          git add pyproject.toml
-          git commit -m "chore: release ${{ steps.bump.outputs.version }}"
-          git push origin HEAD:main
-
-      - name: Create and push tag
-        if: steps.bump.outputs.version != ''
-        # Annotated tag tied to the version-bump commit. This tag is the
-        # release artifact reference for all subsequent jobs.
-        run: |
-          git tag -a "${{ steps.bump.outputs.tag }}" -m "Release ${{ steps.bump.outputs.version }}"
-          git push origin "${{ steps.bump.outputs.tag }}"
-
-  # 2. Build release artifacts at the new tag
-  # Validates the tagged commit with the full CI suite and uploads the
-  # built MkDocs site as an artifact for deploy-vercel to consume.
-  build-release:
-    name: Build Release Artifacts
-    runs-on: ubuntu-latest
-    needs: prepare-release
-    steps:
-      - name: Checkout at release tag
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          # Checkout the exact tag produced by prepare-release so build
-          # artifacts and the GitHub release are guaranteed to match.
-          ref: ${{ needs.prepare-release.outputs.tag }}
-          fetch-depth: 0
-
-      - name: Setup Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-
-      - name: Setup Node
+      - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: 'npm'
+          cache: "npm"
 
-      - name: Install Python dev dependencies
-        run: pip install -e '.[dev]'
-
-      - name: Install Node dependencies
+      - name: Install dependencies
         run: npm ci
 
-      - name: Run full CI pipeline (make ci)
-        # Re-runs the complete local CI target against the release tag.
-        # This guarantees the tagged commit passes markdownlint, mermaid,
-        # ruff, pytest, docs build, and npm audit.
-        run: make ci
+      - name: Run markdownlint
+        run: |
+          npx markdownlint-cli2 \
+            "docs/**/*.md" \
+            "README.md" \
+            "AGENTS.md" \
+            "CONTRIBUTING.md" \
+            --config .markdownlint-cli2.yaml
+
+  # ── 2. Python Lint ─────────────────────────────────────────────────────────
+  python-lint:
+    name: Python Lint
+    runs-on: ubuntu-latest
+    needs: markdownlint
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Upgrade pip
+        run: pip install --upgrade pip
+
+      - name: Install dev dependencies
+        run: pip install -e '.[dev]'
+
+      - name: Ruff check
+        run: ruff check scripts/ tests/
+
+      - name: Ruff format check
+        run: ruff format --check scripts/ tests/
+
+  # ── 3. Mermaid Check ───────────────────────────────────────────────────────
+  mermaid-check:
+    name: Mermaid Check
+    runs-on: ubuntu-latest
+    needs: python-lint
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Expose local bin on PATH
+        run: echo "$GITHUB_WORKSPACE/node_modules/.bin" >> $GITHUB_PATH
+
+      - name: Run mermaid validation
+        run: |
+          echo '{"args":["--no-sandbox","--disable-setuid-sandbox"]}' > /tmp/puppeteer-config.json
+          find docs -name '*.md' ! -path 'docs/azure/diagrams/*' ! -path 'docs/overrides/*' > /tmp/md-files.txt
+          find docs -name '*.mmd' > /tmp/mmd-files.txt
+          PUPPETEER_CONFIG_FILE=/tmp/puppeteer-config.json python scripts/validate_mermaid.py $(cat /tmp/md-files.txt) $(cat /tmp/mmd-files.txt)
+
+  # ── 4. Python Tests ────────────────────────────────────────────────────────
+  python-test:
+    name: Python Tests (3.11)
+    runs-on: ubuntu-latest
+    needs: mermaid-check
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Upgrade pip
+        run: pip install --upgrade pip
+
+      - name: Install dev dependencies
+        run: pip install -e '.[dev]'
+
+      - name: Run tests with coverage
+        run: pytest tests/ -v --cov=scripts --cov-report=term-missing --cov-fail-under=90
+
+  # ── 5. Build ───────────────────────────────────────────────────────────────
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    needs: python-test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install docs dependencies
+        run: pip install -r requirements-docs.txt
 
       - name: Build MkDocs site (strict)
         run: mkdocs build --strict
@@ -183,18 +189,206 @@ jobs:
           path: site/
           retention-days: 7
 
-  # 3. Generate changelog and create GitHub Release
-  # Depends on both prepare-release and build-release so we only publish
-  # a release after the tagged commit has passed full CI.
-  create-github-release:
-    name: Create GitHub Release
+  # ── 6. Version · Tag · Release ─────────────────────────────────────────────
+  version-tag-release:
+    name: Version · Tag · Release
     runs-on: ubuntu-latest
-    needs: [prepare-release, build-release]
+    needs: build
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      skip: ${{ steps.skip-check.outputs.skip }}
+      backend_version: ${{ steps.tag.outputs.backend_version }}
+      frontend_version: ${{ steps.tag.outputs.frontend_version }}
     steps:
-      - name: Checkout at release tag
+      - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
-          ref: ${{ needs.prepare-release.outputs.tag }}
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── 6a. Skip check: is HEAD already released? ──────────────────────────
+      - name: Check if HEAD already matches last release tag
+        id: skip-check
+        run: |
+          set -euo pipefail
+
+          git fetch --tags --force origin
+
+          LAST_TAG=""
+          if LAST_TAG=$(git tag -l --sort=-version:refname | grep -E '^[0-9]{4}\.[0-9]{2}\.[0-9]{2}(\.[0-9]+)?$' | head -n 1); then
+            : # tag found
+          fi
+
+          if [ -z "$LAST_TAG" ]; then
+            echo "No existing CalVer tag found — will create one"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          TAG_SHA=$(git rev-parse "$LAST_TAG^{commit}")
+          HEAD_SHA=$(git rev-parse HEAD)
+
+          echo "Last release tag: $LAST_TAG (commit: $TAG_SHA)"
+          echo "HEAD commit:      $HEAD_SHA"
+
+          if [ "$TAG_SHA" = "$HEAD_SHA" ]; then
+            echo "HEAD matches last release tag — skipping version/tag/release"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "HEAD differs from last release tag — proceeding"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ── 6b. Compute CalVer tag ─────────────────────────────────────────────
+      - name: Compute CalVer tag
+        id: version
+        if: steps.skip-check.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+
+          BASE_YEAR=$(date -u +%Y)
+          BASE_MONTH=$(date -u +%m)
+          BASE_DAY=$(date -u +%d)
+          BASE="${BASE_YEAR}.${BASE_MONTH}.${BASE_DAY}"
+
+          echo "base=${BASE}" >> "$GITHUB_OUTPUT"
+          echo "Timestamp (UTC): $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+          VERSION_ARG="${{ github.event.inputs.version }}"
+          if [ -n "$VERSION_ARG" ]; then
+            TAG="$VERSION_ARG"
+          else
+            CANDIDATES=$(git ls-remote --tags origin | grep -E "refs/tags/${BASE}(\.[0-9]+)?$" || true)
+
+            if [ -z "$CANDIDATES" ]; then
+              TAG="$BASE"
+            else
+              MAX=0
+              while IFS= read -r line; do
+                t=$(echo "$line" | sed 's|^.*refs/tags/||')
+                if [[ "$t" == "$BASE" ]]; then
+                  : # bare base seen, patches may exist
+                else
+                  m=${t#${BASE}.}
+                  if [[ "$m" =~ ^[0-9]+$ ]] && [ "$m" -gt "$MAX" ]; then
+                    MAX=$m
+                  fi
+                fi
+              done <<< "$CANDIDATES"
+              TAG="${BASE}.$((MAX + 1))"
+            fi
+          fi
+
+          if [[ ! "$TAG" =~ ^[0-9]{4}\.[0-9]{2}\.[0-9]{2}(\.[0-9]+)?$ ]]; then
+            echo "::error::Computed tag '$TAG' does not match CalVer (YYYY.MM.DD or YYYY.MM.DD.Micro)"
+            exit 1
+          fi
+
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          MICRO="${TAG#${BASE}.}"
+          [ "$MICRO" = "$TAG" ] && MICRO=""
+          [ -n "$MICRO" ] && echo "micro=${MICRO}" >> "$GITHUB_OUTPUT"
+          echo "Computed version: $TAG (base=$BASE, micro=${MICRO:-none})"
+
+      - name: Verify tag does not already exist
+        if: steps.skip-check.outputs.skip != 'true'
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          if git ls-remote --tags origin | grep -q "refs/tags/${TAG}$"; then
+            echo "::error::Tag '${{ steps.version.outputs.tag }}' already exists on origin — aborting"
+            exit 1
+          fi
+          echo "Tag '${{ steps.version.outputs.tag }}' does not exist yet"
+
+      - name: Warn if HEAD is not yet on origin/main
+        if: steps.skip-check.outputs.skip != 'true'
+        run: |
+          git fetch origin main
+          if ! git diff --quiet origin/main...HEAD; then
+            echo "::warning::HEAD has commits not yet merged to origin/main — tagging anyway"
+          fi
+
+      # ── 6c. Bump version, tag, push ────────────────────────────────────────
+      - name: Bump versions, create tag, push
+        id: tag
+        if: steps.skip-check.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+
+          TAG="${{ steps.version.outputs.tag }}"
+
+          python3 scripts/bump_version.py "$TAG"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add pyproject.toml
+          git commit -m "chore: release $TAG"
+          echo "Committed version bump to $TAG"
+
+          git push origin main
+          echo "Pushed version bump commit to main"
+
+          git tag -a "$TAG" -m "Release $TAG (CalVer rolling release)"
+          git push origin "$TAG"
+          echo "Tagged and pushed $TAG"
+
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "backend_version=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "frontend_version=${TAG}" >> "$GITHUB_OUTPUT"
+
+      # ── 6d. Create GitHub Release ──────────────────────────────────────────
+      - name: Create GitHub Release
+        if: steps.skip-check.outputs.skip != 'true'
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          python3 scripts/generate_changelog.py --output CHANGELOG.md
+
+          gh release create "$TAG" \
+            --title "Release $TAG" \
+            --notes-file CHANGELOG.md \
+            --target main
+
+          echo "Created GitHub Release $TAG"
+
+      # ── 6e. Summaries ──────────────────────────────────────────────────────
+      - name: Summary (skipped)
+        if: steps.skip-check.outputs.skip == 'true'
+        run: |
+          cat <<EOF >> "$GITHUB_STEP_SUMMARY"
+          ## Version · Tag · Release — skipped
+
+          - HEAD commit already matches the last release tag.
+          - No version bump, tag, or GitHub Release created.
+          - Vercel deploy will proceed with the current state.
+          EOF
+
+      - name: Summary (tag)
+        if: steps.skip-check.outputs.skip != 'true'
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          BASE="${{ steps.version.outputs.base }}"
+          MICRO="${{ steps.version.outputs.micro }}"
+
+          cat <<EOF >> "$GITHUB_STEP_SUMMARY"
+          ## Version · Tag · Release
+
+          - **Version:** \`${TAG}\`
+          - **Base (YYYY.MM.DD):** \`${BASE}\`
+          - **Micro:** ${MICRO:-none}
+          - **GitHub Release:** \`${TAG}\`
+          EOF
+
+  # ── 7. Deploy to Vercel ────────────────────────────────────────────────────
+  deploy:
+    name: Deploy to Vercel
+    runs-on: ubuntu-latest
+    needs: version-tag-release
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ needs.version-tag-release.outputs.tag != '' && needs.version-tag-release.outputs.tag || github.sha }}
           fetch-depth: 0
 
       - name: Setup Python
@@ -202,54 +396,21 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Generate changelog
-        id: changelog
-        if: ${{ !github.event.inputs.skip_changelog }}
-        # Generates CHANGELOG.md from conventional commits since the last tag.
-        # The file is consumed by softprops/action-gh-release as the release body.
-        run: |
-          python3 scripts/generate_changelog.py --output CHANGELOG.md
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@1123a1b7b5c841fa124c6465b4110ecb6a48b129  # v2
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
-          tag_name: ${{ needs.prepare-release.outputs.tag }}
-          name: Release ${{ needs.prepare-release.outputs.version }}
-          body_path: CHANGELOG.md
-          draft: false
-          prerelease: false
-          generate_release_notes: false
-
-  # 4. Deploy to Vercel production
-  # Depends on prepare-release, build-release, and create-github-release so
-  # production only sees commits that are tagged and have passing CI.
-  deploy-vercel:
-    name: Deploy to Vercel
-    runs-on: ubuntu-latest
-    needs: [prepare-release, build-release, create-github-release]
-    if: ${{ !github.event.inputs.skip_deploy }}
-    steps:
-      - name: Checkout at release tag
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          ref: ${{ needs.prepare-release.outputs.tag }}
-
-      - name: Setup Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
 
       - name: Install Vercel CLI (pinned)
-        # Pin the CLI version to avoid unexpected breaking changes from latest.
         run: npm install --global vercel@59.10.0
 
       - name: Pull Vercel Environment Information
-        # Fetches project env vars and config from Vercel without deploying.
-        # Required before `vercel build` so local build matches Vercel's.
         run: vercel pull --yes --environment=production --token=${{ secrets.VERCEL_TOKEN }}
 
       - name: Build Project Artifacts
-        # Produces `.vercel/output` in the repo; deploy step uploads this.
+        # Uses `vercel.json` buildCommand:
+        #   python -m pip install -r requirements-docs.txt && mkdocs build --strict
         run: vercel build --prod --token=${{ secrets.VERCEL_TOKEN }}
 
       - name: Deploy Project Artifacts to Vercel
@@ -257,9 +418,12 @@ jobs:
         # rebuilding remotely, keeping deploy deterministic.
         run: vercel deploy --prebuilt --prod --token=${{ secrets.VERCEL_TOKEN }}
 
-      - name: Post deployment comment
-        # Visible in the workflow run summary; useful for tracing which
-        # version ended up in production without opening Vercel.
+      - name: Summary (deploy)
         run: |
-          echo "🚀 Deployed version ${{ needs.prepare-release.outputs.version }} to production"
-          echo "🔗 https://tech-cheat-sheets-and-notes.vercel.app"
+          TAG_OR_SHA="${{ needs.version-tag-release.outputs.tag != '' && needs.version-tag-release.outputs.tag || github.sha }}"
+          cat <<EOF >> "$GITHUB_STEP_SUMMARY"
+          ## Deployed to Vercel Production
+
+          - **Deployed:** \`${TAG_OR_SHA}\`
+          - **Frontend URL:** https://tech-cheat-sheets-and-notes.vercel.app
+          EOF
