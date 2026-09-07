@@ -4,10 +4,11 @@ on:
   push:
     branches:
       - main
-  pull_request:
+  # Removed pull_request trigger — now handled by pr-gate.yml
 
 env:
   PYTHON_VERSION: "3.11"
+  NODE_VERSION: "20"
 
 jobs:
   markdownlint:
@@ -20,6 +21,7 @@ jobs:
             docs/**/*.md
             README.md
             AGENTS.md
+            CONTRIBUTING.md
 
   python-lint:
     runs-on: ubuntu-latest
@@ -85,7 +87,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
-          node-version: "20"
+          node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
       - name: Install dependencies
         run: npm ci
@@ -93,35 +95,35 @@ jobs:
         run: npm audit --audit-level=high
 
   mermaid-check:
-      runs-on: ubuntu-latest
-      needs:
-        - markdownlint
-        - docs-build
-        - python-lint
-        - python-test
-        - link-check
-        - npm-audit
-      env:
-        PUPPETEER_CONFIG_FILE: /tmp/puppeteer-config.json
-      steps:
-        - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
-          with:
-            python-version: ${{ env.PYTHON_VERSION }}
-        - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
-          with:
-            node-version: "20"
-            cache: 'npm'
-        - name: Install mermaid-cli
-          run: npm ci
-        - name: Expose local bin on PATH
-          run: echo "$GITHUB_WORKSPACE/node_modules/.bin" >> $GITHUB_PATH
-        - name: Write puppeteer config
-          run: echo '{"args":["--no-sandbox","--disable-setuid-sandbox"]}' > /tmp/puppeteer-config.json
-        - name: Validate Mermaid diagrams
-          run: |
-            python3 scripts/validate_mermaid.py \
-              $(find docs -name '*.md' \
-                ! -path 'docs/azure/diagrams/*' \
-                ! -path 'docs/overrides/*' | sort) \
-              $(find docs -name '*.mmd' | sort)
+    runs-on: ubuntu-latest
+    needs:
+      - markdownlint
+      - docs-build
+      - python-lint
+      - python-test
+      - link-check
+      - npm-audit
+    env:
+      PUPPETEER_CONFIG_FILE: /tmp/puppeteer-config.json
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+      - name: Install mermaid-cli
+        run: npm ci
+      - name: Expose local bin on PATH
+        run: echo "$GITHUB_WORKSPACE/node_modules/.bin" >> $GITHUB_PATH
+      - name: Write puppeteer config
+        run: echo '{"args":["--no-sandbox","--disable-setuid-sandbox"]}' > /tmp/puppeteer-config.json
+      - name: Validate Mermaid diagrams
+        run: |
+          python3 scripts/validate_mermaid.py \
+            $(find docs -name '*.md' \
+              ! -path 'docs/azure/diagrams/*' \
+              ! -path 'docs/overrides/*' | sort) \
+            $(find docs -name '*.mmd' | sort)
